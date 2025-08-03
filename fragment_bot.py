@@ -65,32 +65,23 @@ async def on_connect(msg: types.Message):
     """
     /connect →
       1) Click “Connect TON”
-      2) Wait for the TON-Connect modal
-      3) Click the QR-grid icon (2nd <button> in modal)
-      4) Copy the tc://… link
-      5) Send link + Logout button
-      6) Wait for handshake → “Connected successfully!”
+      2) Wait for the “Copy Link” button in the modal
+      3) Copy the tc://… link
+      4) Send link + Logout button
+      5) Wait for handshake → “Connected successfully!”
     """
     page = await init_browser()
 
     # 1) Click “Connect TON”
     await page.click("button:has-text('Connect TON')")
 
-    # 2) Wait for the modal container to appear
-    modal = page.locator("div[data-tc-modal='true'][data-tc-wallets-modal-container='true']")
-    await modal.wait_for(timeout=10000)
-
-    # 3) Click its second button (the QR-grid icon)
-    await modal.locator("button").nth(1).click()
-
-    # 4) Grab the deep-link from the “Copy Link” button inside that modal
-    copy_btn = modal.locator("button:has-text('Copy Link')")
-    await copy_btn.wait_for(timeout=10000)
+    # 2) Grab the “Copy Link” button (no QR icon step)
+    copy_btn = await page.wait_for_selector("button:has-text('Copy Link')", timeout=10000)
     link = await copy_btn.get_attribute("data-clipboard-text")
     if not link:
         return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
 
-    # 5) Send link + inline “Log out” button
+    # 3) Send the link with a logout button
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
     ])
@@ -100,7 +91,7 @@ async def on_connect(msg: types.Message):
         reply_markup=kb
     )
 
-    # 6) Wait up to 60s for the “Connect TON” button to disappear (handshake done)
+    # 4) Wait up to 60s for the “Connect TON” button to disappear → handshake done
     try:
         await page.wait_for_selector(
             "button:has-text('Connect TON')",
@@ -175,5 +166,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
