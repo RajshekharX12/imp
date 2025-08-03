@@ -65,23 +65,22 @@ async def on_connect(msg: types.Message):
     """
     /connect →
       1) Click “Connect TON”
-      2) Wait for the “Copy Link” button in the modal
-      3) Copy the tc://… link
-      4) Send link + Logout button
-      5) Wait for handshake → “Connected successfully!”
+      2) Grab the first element with data-clipboard-text (the Copy Link widget)
+      3) Send that tc://… URL + Logout button
+      4) Wait for handshake → “Connected successfully!”
     """
     page = await init_browser()
 
     # 1) Click “Connect TON”
     await page.click("button:has-text('Connect TON')")
 
-    # 2) Grab the “Copy Link” button (no QR icon step)
-    copy_btn = await page.wait_for_selector("button:has-text('Copy Link')", timeout=10000)
-    link = await copy_btn.get_attribute("data-clipboard-text")
+    # 2) Wait for the Copy Link widget (it has data-clipboard-text)
+    copy_el = await page.wait_for_selector("[data-clipboard-text]", timeout=10000)
+    link = await copy_el.get_attribute("data-clipboard-text")
     if not link:
         return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
 
-    # 3) Send the link with a logout button
+    # 3) Reply with the link + inline “Log out” button
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
     ])
@@ -91,7 +90,7 @@ async def on_connect(msg: types.Message):
         reply_markup=kb
     )
 
-    # 4) Wait up to 60s for the “Connect TON” button to disappear → handshake done
+    # 4) Wait up to 60s for the “Connect TON” button to vanish → handshake done
     try:
         await page.wait_for_selector(
             "button:has-text('Connect TON')",
@@ -166,3 +165,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
