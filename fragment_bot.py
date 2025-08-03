@@ -22,9 +22,9 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # ─── GLOBAL BROWSER STATE ────────────────────────────────────────────────────────
-_playwright = None        # Playwright driver
+_playwright = None
 _context: BrowserContext = None
-_page: Page = None        # Main page handle
+_page: Page = None
 
 async def init_browser() -> Page:
     """Launch or reuse a persistent Playwright Chromium context (headless)."""
@@ -37,7 +37,7 @@ async def init_browser() -> Page:
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=user_data,
-        headless=True    # run headless on your server
+        headless=True
     )
     _page = await _context.new_page()
     await _page.goto("https://fragment.com", wait_until="domcontentloaded")
@@ -65,16 +65,13 @@ async def on_connect(msg: types.Message):
     # 1) Open the TON-Connect modal
     await page.click("button:has-text('Connect TON')")
 
-    # 2) Reveal the Copy Link button
-    await page.click("button[aria-label='TON Connect QR']")
-
-    # 3) Grab the tc://… link from the Copy Link button
+    # 2) Wait for and grab the Copy Link button
     copy_btn = await page.wait_for_selector("button:has-text('Copy Link')", timeout=10000)
     link = await copy_btn.get_attribute("data-clipboard-text")
     if not link:
         return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
 
-    # 4) Send it with a Log out button
+    # 3) Send it with a Log out button
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
     ])
@@ -84,7 +81,7 @@ async def on_connect(msg: types.Message):
         reply_markup=kb
     )
 
-    # 5) Wait up to 60s for the Connect TON button to vanish → handshake done
+    # 4) Wait up to 60s for the Connect TON button to vanish → handshake done
     try:
         await page.wait_for_selector("button:has-text('Connect TON')", state="detached", timeout=60000)
         await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
