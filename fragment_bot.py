@@ -25,7 +25,6 @@ _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
-    """Launch or reuse a persistent Playwright Chromium context (headless)."""
     global _playwright, _context, _page
     if _page:
         return _page
@@ -35,11 +34,8 @@ async def init_browser() -> Page:
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=user_data,
-        headless=True,               # ← HEADLESS on
-        args=[
-            "--no-sandbox",          # required on many Linux hosts
-            "--disable-dev-shm-usage"
-        ]
+        headless=True,
+        args=["--no-sandbox", "--disable-dev-shm-usage"]
     )
     _page = await _context.new_page()
     await _page.goto("https://fragment.com", wait_until="domcontentloaded")
@@ -47,7 +43,6 @@ async def init_browser() -> Page:
     return _page
 
 async def shutdown_browser():
-    """Close everything to clear login/session data."""
     global _playwright, _context, _page
     if _context:
         await _context.close()
@@ -60,12 +55,17 @@ async def shutdown_browser():
 
 # ─── COMMAND HANDLERS ────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
+    """Handle /connect: click Connect TON and grab the deep-link."""
     page = await init_browser()
+
+    # 1) Click the Connect TON button
     await page.click("button:has-text('Connect TON')")
-    await page.click("button[aria-label='TON Connect QR']")
-    link_el = await page.wait_for_selector("a[href^='tc://']", timeout=10000)
+
+    # 2) Directly wait for the <a href="tc://…"> in the DOM
+    link_el = await page.wait_for_selector("a[href^='tc://']", timeout=15000)
     link = await link_el.get_attribute("href")
 
+    # 3) Send it with a Log-out button
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
     ])
