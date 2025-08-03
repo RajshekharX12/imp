@@ -1,3 +1,5 @@
+# File: fragment_bot.py
+
 import os
 import asyncio
 import logging
@@ -25,6 +27,7 @@ _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
+    """Launch or reuse a persistent Playwright Chromium context (headless)."""
     global _playwright, _context, _page
     if _page:
         return _page
@@ -43,6 +46,7 @@ async def init_browser() -> Page:
     return _page
 
 async def shutdown_browser():
+    """Close browser to clear session data."""
     global _playwright, _context, _page
     if _context:
         await _context.close()
@@ -51,21 +55,35 @@ async def shutdown_browser():
     _page = None
     _context = None
     _playwright = None
-    logging.info("🔒 Browser closed, session cleared.")
+    logging.info("🔒 Browser closed; session cleared.")
 
-# ─── COMMAND HANDLERS ────────────────────────────────────────────────────────────
+# ─── HANDLERS ────────────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
-    """Handle /connect: click Connect TON and grab the deep-link."""
+    """Handle /connect: click Connect TON, extract tc:// link via JS."""
     page = await init_browser()
 
-    # 1) Click the Connect TON button
+    # 1) Click "Connect TON"
     await page.click("button:has-text('Connect TON')")
 
-    # 2) Directly wait for the <a href="tc://…"> in the DOM
-    link_el = await page.wait_for_selector("a[href^='tc://']", timeout=15000)
-    link = await link_el.get_attribute("href")
+    # 2) Wait up to 15s for deep-link to appear in the QR dialog
+    link = None
+    for _ in range(15):
+        link = await page.evaluate(
+            """() => {
+                const dlg = document.querySelector('ton-connect-qr-dialog');
+                if (!dlg || !dlg.shadowRoot) return null;
+                const a = dlg.shadowRoot.querySelector('a[href^="tc://"]');
+                return a?.href || null;
+            }"""
+        )
+        if link:
+            break
+        await page.wait_for_timeout(1000)
 
-    # 3) Send it with a Log-out button
+    if not link:
+        return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Try again?")
+
+    # 3) Send link with Logout button
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
     ])
@@ -83,21 +101,21 @@ async def on_logout_cb(call: types.CallbackQuery):
     await do_logout(call.message)
 
 async def do_logout(destination):
+    """Perform logout and notify the user."""
     await shutdown_browser()
     await destination.answer(
         "🔒 You’ve been logged out. Use `/connect` to reconnect.",
         parse_mode="Markdown"
     )
 
-# ─── INLINE QUERY HANDLER ───────────────────────────────────────────────────────
 async def on_inline_query(inline_q: InlineQuery):
+    """Handle inline queries to fetch your login code."""
     query = inline_q.query.strip()
     if not (query.isdigit() and 3 <= len(query) <= 7):
         return await inline_q.answer(results=[], cache_time=1)
 
     suffix = query
     full_number = f"+888{suffix}"
-
     page = await init_browser()
     try:
         await page.goto("https://fragment.com/my/numbers", wait_until="domcontentloaded")
@@ -130,7 +148,7 @@ async def main():
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
-    logging.info("🤖 Bot started. Commands: /connect, /logout. Inline: type digits.")
+    logging.info("🤖 Bot started. Commands: /connect, /logout. Inline: digits.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
