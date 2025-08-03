@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, Text
+from aiogram.filters import Command
 from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -121,7 +121,6 @@ async def on_inline_query(inline_q: InlineQuery):
     full_number = f"+888{suffix}"
 
     page = await init_browser()
-    code: str
     try:
         # navigate to My Numbers
         await page.goto("https://fragment.com/my/numbers", wait_until="domcontentloaded")
@@ -154,7 +153,7 @@ async def main():
 
     dp.message.register(on_connect, Command(commands=["connect"]))
     dp.message.register(on_logout_cmd, Command(commands=["logout"]))
-    dp.callback_query.register(on_logout_cb, Text(equals="logout"))
+    dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
     logging.info("🤖 Bot started. Commands: /connect, /logout. Inline: type digits.")
@@ -162,3 +161,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
