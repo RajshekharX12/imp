@@ -25,17 +25,21 @@ _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
+    """Launch or reuse a persistent Playwright Chromium context (headless)."""
     global _playwright, _context, _page
     if _page:
         return _page
 
-    logging.info("🚀 Starting Playwright…")
+    logging.info("🚀 Starting Playwright in headless mode…")
     _playwright = await async_playwright().start()
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=user_data,
-        headless=False,
-        args=["--start-maximized"]
+        headless=True,               # ← HEADLESS on
+        args=[
+            "--no-sandbox",          # required on many Linux hosts
+            "--disable-dev-shm-usage"
+        ]
     )
     _page = await _context.new_page()
     await _page.goto("https://fragment.com", wait_until="domcontentloaded")
@@ -43,6 +47,7 @@ async def init_browser() -> Page:
     return _page
 
 async def shutdown_browser():
+    """Close everything to clear login/session data."""
     global _playwright, _context, _page
     if _context:
         await _context.close()
@@ -130,4 +135,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
