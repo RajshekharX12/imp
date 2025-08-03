@@ -3,7 +3,7 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, Text
+from aiogram.filters import Command
 from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -34,7 +34,7 @@ async def init_browser() -> Page:
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=user_data,
-        headless=False,            # show so you can scan the QR
+        headless=False,
         args=["--start-maximized"]
     )
     _page = await _context.new_page()
@@ -55,7 +55,6 @@ async def shutdown_browser():
 
 # ─── COMMAND HANDLERS ────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
-    """Handle /connect: open Fragment, click Connect TON, grab deep-link from ‘Open Link’."""
     page = await init_browser()
 
     # 1) Click “Connect TON”
@@ -69,21 +68,20 @@ async def on_connect(msg: types.Message):
     link = await open_link.get_attribute("href")
 
     # 4) Send it + a Logout button
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton("🔒 Log out", callback_data="logout")]]
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
+    ])
     await msg.answer(
         f"🔗 Open this link in Tonkeeper to connect:\n\n`{link}`",
         parse_mode="Markdown",
         reply_markup=kb
     )
 
-    # 5) Wait for handshake to complete: “Connect TON” button disappears
+    # 5) Wait for handshake to complete
     try:
         await page.wait_for_selector("button:has-text('Connect TON')", state="detached", timeout=60000)
         await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
-    except:
-        # timed out; user can still /status or trust that they scanned
+    except asyncio.TimeoutError:
         logging.warning("Timeout waiting for Connect TON button to disappear.")
 
 async def on_logout_cmd(msg: types.Message):
@@ -138,7 +136,8 @@ async def main():
 
     dp.message.register(on_connect, Command(commands=["connect"]))
     dp.message.register(on_logout_cmd, Command(commands=["logout"]))
-    dp.callback_query.register(on_logout_cb, Text(equals="logout"))
+    # use a lambda to filter callback_query.data == "logout"
+    dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
     logging.info("🤖 Bot started. Commands: /connect, /logout. Inline: type digits.")
