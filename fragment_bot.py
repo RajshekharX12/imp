@@ -3,7 +3,7 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, Text
+from aiogram.filters import Command
 from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -25,7 +25,6 @@ _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
-    """Launch or reuse a persistent Playwright Chromium context."""
     global _playwright, _context, _page
     if _page:
         return _page
@@ -35,7 +34,7 @@ async def init_browser() -> Page:
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=user_data,
-        headless=False,            # QR scanning
+        headless=False,
         args=["--start-maximized"]
     )
     _page = await _context.new_page()
@@ -44,7 +43,6 @@ async def init_browser() -> Page:
     return _page
 
 async def shutdown_browser():
-    """Close everything to clear login/session data."""
     global _playwright, _context, _page
     if _context:
         await _context.close()
@@ -57,7 +55,6 @@ async def shutdown_browser():
 
 # ─── COMMAND HANDLERS ────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
-    """Handle /connect: open Fragment, click Connect TON, grab deep-link."""
     page = await init_browser()
     await page.click("button:has-text('Connect TON')")
     await page.click("button[aria-label='TON Connect QR']")
@@ -74,16 +71,13 @@ async def on_connect(msg: types.Message):
     )
 
 async def on_logout_cmd(msg: types.Message):
-    """Handle /logout in DM."""
     await do_logout(msg)
 
 async def on_logout_cb(call: types.CallbackQuery):
-    """Handle Logout button presses."""
     await call.answer()
     await do_logout(call.message)
 
 async def do_logout(destination):
-    """Perform logout and notify user."""
     await shutdown_browser()
     await destination.answer(
         "🔒 You’ve been logged out. Use `/connect` to reconnect.",
@@ -92,9 +86,7 @@ async def do_logout(destination):
 
 # ─── INLINE QUERY HANDLER ───────────────────────────────────────────────────────
 async def on_inline_query(inline_q: InlineQuery):
-    """Answer inline queries like `0495169` to fetch login code."""
     query = inline_q.query.strip()
-    # simple validation: must be digits (at least 3–7 chars)
     if not (query.isdigit() and 3 <= len(query) <= 7):
         return await inline_q.answer(results=[], cache_time=1)
 
@@ -130,7 +122,7 @@ async def main():
 
     dp.message.register(on_connect, Command(commands=["connect"]))
     dp.message.register(on_logout_cmd, Command(commands=["logout"]))
-    dp.callback_query.register(on_logout_cb, Text(equals="logout"))
+    dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
     logging.info("🤖 Bot started. Commands: /connect, /logout. Inline: type digits.")
@@ -138,3 +130,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
