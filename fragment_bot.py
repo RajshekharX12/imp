@@ -16,7 +16,7 @@ from aiogram.types import (
 from playwright.async_api import async_playwright, BrowserContext, Page
 from dotenv import load_dotenv
 
-# ─── CONFIGURE & LOGGING ─────────────────────────────────────────────────────────
+# ─── CONFIG & LOGGING ───────────────────────────────────────────────────────────
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -27,18 +27,17 @@ _context: BrowserContext = None
 _page: Page = None        # Main page handle
 
 async def init_browser() -> Page:
-    """Launch or reuse a persistent Playwright Chromium context and return the main page."""
+    """Launch or reuse a persistent Playwright Chromium context (headless)."""
     global _playwright, _context, _page
     if _page:
         return _page
 
-    logging.info("🚀 Starting Playwright…")
+    logging.info("🚀 Starting Playwright in headless mode…")
     _playwright = await async_playwright().start()
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=user_data,
-        headless=False,            # show browser so you can scan QR if needed
-        args=["--start-maximized"]
+        headless=True    # run headless on your server
     )
     _page = await _context.new_page()
     await _page.goto("https://fragment.com", wait_until="domcontentloaded")
@@ -60,7 +59,7 @@ async def shutdown_browser():
 # ─── HANDLERS ───────────────────────────────────────────────────────────────────
 
 async def on_connect(msg: types.Message):
-    """Handle /connect: open Fragment, click Connect TON, grab only the Copy Link."""
+    """Handle /connect: open TON-Connect modal, grab only the Copy Link, confirm handshake."""
     page = await init_browser()
 
     # 1) Open the TON-Connect modal
@@ -69,10 +68,9 @@ async def on_connect(msg: types.Message):
     # 2) Reveal the Copy Link button
     await page.click("button[aria-label='TON Connect QR']")
 
-    # 3) Grab the tc://… link from the Copy Link button's data-clipboard-text
+    # 3) Grab the tc://… link from the Copy Link button
     copy_btn = await page.wait_for_selector("button:has-text('Copy Link')", timeout=10000)
     link = await copy_btn.get_attribute("data-clipboard-text")
-
     if not link:
         return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
 
@@ -114,7 +112,6 @@ async def on_inline_query(inline_q: InlineQuery):
     """Handle inline queries: `<suffix>` → fetch login code for +888<suffix>."""
     query = inline_q.query.strip()
     if not (query.isdigit() and 3 <= len(query) <= 7):
-        # ignore non-numeric or wrong-length queries
         return await inline_q.answer(results=[], cache_time=1)
 
     suffix = query
@@ -122,15 +119,12 @@ async def on_inline_query(inline_q: InlineQuery):
 
     page = await init_browser()
     try:
-        # navigate to My Numbers
         await page.goto("https://fragment.com/my/numbers", wait_until="domcontentloaded")
-        # find the row and click Get Login Code
         row = await page.wait_for_selector(
             f"xpath=//div[contains(text(), '{suffix}')]/ancestor::div[@role='row']",
             timeout=7000
         )
         await row.click("button:has-text('Get Login Code')")
-        # read the code
         code_el = await page.wait_for_selector("div.login-code", timeout=10000)
         code = (await code_el.text_content() or "").strip()
     except Exception as e:
@@ -161,4 +155,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
