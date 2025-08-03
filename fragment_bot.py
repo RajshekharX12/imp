@@ -1,3 +1,5 @@
+# File: fragment_bot.py
+
 import os
 import asyncio
 import logging
@@ -25,17 +27,21 @@ _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
+    """Launch or reuse a persistent, headless Playwright Chromium context."""
     global _playwright, _context, _page
     if _page:
         return _page
 
-    logging.info("🚀 Starting Playwright…")
+    logging.info("🚀 Starting Playwright in headless mode…")
     _playwright = await async_playwright().start()
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=user_data,
-        headless=False,
-        args=["--start-maximized"]
+        headless=True,  # run without X server
+        args=[
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+        ],
     )
     _page = await _context.new_page()
     await _page.goto("https://fragment.com", wait_until="domcontentloaded")
@@ -43,6 +49,7 @@ async def init_browser() -> Page:
     return _page
 
 async def shutdown_browser():
+    """Close everything to clear login/session data."""
     global _playwright, _context, _page
     if _context:
         await _context.close()
@@ -55,6 +62,7 @@ async def shutdown_browser():
 
 # ─── COMMAND HANDLERS ────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
+    """Handle /connect: open Fragment, click Connect TON, grab deep-link from ‘Open Link’."""
     page = await init_browser()
 
     # 1) Click “Connect TON”
@@ -68,21 +76,23 @@ async def on_connect(msg: types.Message):
     link = await open_link.get_attribute("href")
 
     # 4) Send it + a Logout button
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
-    ])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton("🔒 Log out", callback_data="logout")]]
+    )
     await msg.answer(
         f"🔗 Open this link in Tonkeeper to connect:\n\n`{link}`",
         parse_mode="Markdown",
         reply_markup=kb
     )
 
-    # 5) Wait for handshake to complete
+    # 5) Wait for handshake to complete (button disappears)
     try:
-        await page.wait_for_selector("button:has-text('Connect TON')", state="detached", timeout=60000)
+        await page.wait_for_selector("button:has-text('Connect TON')",
+                                     state="detached",
+                                     timeout=60000)
         await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
     except asyncio.TimeoutError:
-        logging.warning("Timeout waiting for Connect TON button to disappear.")
+        logging.warning("Timed out waiting for Connect TON button to disappear.")
 
 async def on_logout_cmd(msg: types.Message):
     await do_logout(msg)
@@ -100,6 +110,7 @@ async def do_logout(destination):
 
 # ─── INLINE QUERY HANDLER ───────────────────────────────────────────────────────
 async def on_inline_query(inline_q: InlineQuery):
+    """Type digits inline (e.g. `0495169`) to fetch your +888… login code."""
     query = inline_q.query.strip()
     if not (query.isdigit() and 3 <= len(query) <= 7):
         return await inline_q.answer(results=[], cache_time=1)
@@ -136,13 +147,13 @@ async def main():
 
     dp.message.register(on_connect, Command(commands=["connect"]))
     dp.message.register(on_logout_cmd, Command(commands=["logout"]))
-    # use a lambda to filter callback_query.data == "logout"
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
-    logging.info("🤖 Bot started. Commands: /connect, /logout. Inline: type digits.")
+    logging.info("🤖 Bot started. Use /connect, /logout, or inline digits.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
