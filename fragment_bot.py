@@ -25,17 +25,22 @@ if not BOT_TOKEN:
     exit(1)
 
 # ─── GLOBAL BROWSER STATE ────────────────────────────────────────────────────────
-_playwright = None
+_playwright = None              # type: async_playwright.Playwright
 _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
+    """
+    Launch (or re-use) a persistent mobile-context Chromium.
+    """
     global _playwright, _context, _page
     if _page:
         return _page
 
     logging.info("🚀 Launching Playwright in headless mobile (iPhone 13) mode…")
     _playwright = await async_playwright().start()
+
+    # grab the built-in iPhone13 descriptor
     iphone = _playwright.devices["iPhone 13"]
 
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
@@ -43,16 +48,17 @@ async def init_browser() -> Page:
         user_data_dir=user_data,
         headless=True,
         args=["--no-sandbox", "--disable-dev-shm-usage"],
-        viewport=iphone["viewport"],
-        user_agent=iphone["userAgent"],
-        permissions=["clipboard-read"],
+        **iphone,                       # viewport, user_agent, is_mobile, has_touch, etc.
+        permissions=["clipboard-read"], # allow clipboard API
     )
+
     _page = await _context.new_page()
     await _page.goto("https://fragment.com", wait_until="domcontentloaded")
     logging.info("✅ Navigated to fragment.com (mobile view)")
     return _page
 
 async def shutdown_browser():
+    """Closes the browser and wipes session data."""
     global _playwright, _context, _page
     if _context:
         await _context.close()
@@ -68,26 +74,26 @@ async def on_connect(msg: types.Message):
     page = await init_browser()
 
     try:
-        # 1) Click the first visible “Connect TON” button
+        # 1) click the first visible Connect TON button
         await page.locator("button.ton-auth-link:visible").first.click()
 
-        # 2) Wait for the TON-Connect modal root
+        # 2) wait for the TON-Connect modal root
         await page.wait_for_selector("#tc-widget-root", state="visible", timeout=10000)
         modal = page.locator("#tc-widget-root")
 
-        # 3) Click the QR-grid icon (second button in that modal)
+        # 3) click the QR-grid icon (second button)
         await modal.locator("button").nth(1).click()
         await page.wait_for_selector("text=Scan with your mobile wallet", timeout=10000)
 
-        # 4) Click “Copy Link” and read its data-clipboard-text
+        # 4) click “Copy Link” or read its data-clipboard-text attribute
         copy_btn = await modal.wait_for_selector("button:has-text('Copy Link')", timeout=10000)
         link = await copy_btn.get_attribute("data-clipboard-text")
         if not link:
-            # fallback: click then read from clipboard API
+            # fallback: perform the click and read the clipboard
             await copy_btn.click()
             link = await page.evaluate("() => navigator.clipboard.readText()")
 
-        # 5) Send the link plus a Logout button
+        # 5) reply with the link + a Logout button
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
         ])
@@ -97,7 +103,7 @@ async def on_connect(msg: types.Message):
             reply_markup=kb
         )
 
-        # 6) Wait for the handshake (the connect button should disappear)
+        # 6) wait for the handshake (button disappears)
         try:
             await page.wait_for_selector("button.ton-auth-link:visible", state="detached", timeout=60000)
             await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
@@ -137,8 +143,7 @@ async def on_inline_query(inline_q: InlineQuery):
     try:
         await page.goto("https://fragment.com/my/numbers", wait_until="domcontentloaded")
         row = await page.wait_for_selector(
-            f"xpath=//div[contains(text(), '{suffix}')]/ancestor::div[@role='row']",
-            timeout=7000
+            f"xpath=//div[contains(text(), '{suffix}')]/ancestor::div[@role='row']", timeout=7000
         )
         await row.click("button:has-text('Get Login Code')")
         el = await page.wait_for_selector("div.login-code", timeout=10000)
