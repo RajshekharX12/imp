@@ -1,4 +1,4 @@
-# file: fragment_bot.py
+# File: fragment_bot.py
 
 import os
 import asyncio
@@ -25,35 +25,35 @@ if not BOT_TOKEN:
     exit(1)
 
 # ─── GLOBAL BROWSER STATE ────────────────────────────────────────────────────────
-_playwright = None              # type: async_playwright.Playwright
-_context: BrowserContext = None
-_page: Page = None
+_playwright = None          # type: ignore
+_context: BrowserContext = None  # type: ignore
+_page: Page = None          # type: ignore
 
 async def init_browser() -> Page:
     """
-    Launch (or re-use) a persistent mobile Chromium context emulating iPhone 13.
+    Launch or return a persistent headless Chromium context emulating iPhone 13.
     """
     global _playwright, _context, _page
     if _page:
         return _page
 
-    logging.info("🚀 Launching Playwright in headless mobile (iPhone 13) mode…")
+    logging.info("🚀 Launching Playwright in headless iPhone 13 mode…")
     _playwright = await async_playwright().start()
-
-    # Grab the built-in descriptor:
-    descriptor = _playwright.devices["iPhone 13"]
 
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=user_data,
         headless=True,
         args=["--no-sandbox", "--disable-dev-shm-usage"],
-        # only pass supported keys:
-        viewport=descriptor["viewport"],
-        user_agent=descriptor["userAgent"],
-        device_scale_factor=descriptor["deviceScaleFactor"],
-        is_mobile=descriptor["isMobile"],
-        has_touch=descriptor["hasTouch"],
+        # Hard-coded iPhone 13 parameters:
+        viewport={"width": 390, "height": 844},
+        user_agent=(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1"
+        ),
+        device_scale_factor=3,
+        is_mobile=True,
+        has_touch=True,
         permissions=["clipboard-read"],
     )
 
@@ -63,7 +63,7 @@ async def init_browser() -> Page:
     return _page
 
 async def shutdown_browser():
-    """Close browser context & Playwright, clear session."""
+    """Close browser context & Playwright to clear session."""
     global _playwright, _context, _page
     if _context:
         await _context.close()
@@ -76,48 +76,53 @@ async def shutdown_browser():
 
 # ─── /connect ─────────────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
+    """
+    1) Click ‘Connect TON’ 
+    2) Open QR modal 
+    3) Copy the deep-link 
+    4) Send link + logout button 
+    5) Wait for handshake
+    """
     page = await init_browser()
-
     try:
-        # 1) click the first visible Connect TON button
-        await page.locator("button.ton-auth-link:visible").first.click()
+        # 1) Tap the header’s Connect TON button
+        await page.click("button:has-text('Connect TON'):visible")
 
-        # 2) wait for the TON-Connect widget
-        await page.wait_for_selector("#tc-widget-root", state="visible", timeout=10000)
-        modal = page.locator("#tc-widget-root")
+        # 2) Wait for wallet dialog
+        await page.wait_for_selector("text=Connect your TON wallet", timeout=10000)
 
-        # 3) click the QR-grid icon (second button)
-        await modal.locator("button").nth(1).click()
-        await page.wait_for_selector("text=Scan with your mobile wallet", timeout=10000)
+        # 3) In that dialog, click the QR-grid icon (second button)
+        dialog = page.locator("div:has-text('Connect your TON wallet')").first
+        await dialog.locator("button").nth(1).click()
 
-        # 4) copy the link
-        copy_btn = await modal.wait_for_selector("button:has-text('Copy Link')", timeout=10000)
-        link = await copy_btn.get_attribute("data-clipboard-text")
+        # 4) Grab the ‘Copy Link’ button’s data attribute
+        copy_btn = await dialog.wait_for_selector("button:has-text('Copy Link')", timeout=10000)
+        link = await copy_btn.get_attribute("data-clipboard-text") or ""
         if not link:
-            # fallback: click + read from clipboard
-            await copy_btn.click()
-            link = await page.evaluate("() => navigator.clipboard.readText()")
+            return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
 
-        # 5) reply with link + logout button
+        # 5) Send it with a Log out inline button
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [ InlineKeyboardButton("🔒 Log out", callback_data="logout") ]
+            [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
         ])
         await msg.answer(
-            f"🔗 Copy this link into Tonkeeper to connect:\n\n`{link}`",
+            f"🔗 Copy this link into your TON wallet app to connect:\n\n`{link}`",
             parse_mode="Markdown",
             reply_markup=kb
         )
 
-        # 6) wait for handshake (button disappears)
+        # 6) Wait up to 60s for the Connect button to disappear (handshake)
         try:
-            await page.wait_for_selector("button.ton-auth-link:visible", state="detached", timeout=60000)
+            await page.wait_for_selector("button:has-text('Connect TON')",
+                                         state="detached",
+                                         timeout=60000)
             await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
         except asyncio.TimeoutError:
-            logging.warning("Handshake timeout — perhaps already connected.")
+            logging.warning("Handshake timeout; maybe you've already connected.")
 
     except Exception as e:
+        logging.exception(e)
         await msg.answer(f"⚠️ Error during /connect:\n```\n{e}\n```")
-        logging.error(f"/connect failed: {e}")
 
 # ─── /logout ─────────────────────────────────────────────────────────────────────
 async def on_logout_cmd(msg: types.Message):
@@ -136,6 +141,9 @@ async def do_logout(destination):
 
 # ─── Inline Query ────────────────────────────────────────────────────────────────
 async def on_inline_query(inline_q: InlineQuery):
+    """
+    Inline '<suffix>' → fetch login code for +888<suffix>.
+    """
     q = inline_q.query.strip()
     if not (q.isdigit() and 3 <= len(q) <= 7):
         return await inline_q.answer(results=[], cache_time=1)
@@ -174,7 +182,7 @@ async def main():
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
-    logging.info("🤖 Bot started: /connect, /logout; inline → type digits.")
+    logging.info("🤖 Bot started — commands: /connect, /logout; inline → type digits.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
