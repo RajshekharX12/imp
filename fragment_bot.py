@@ -3,6 +3,7 @@
 import os
 import asyncio
 import logging
+import aiohttp
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -13,130 +14,101 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InputTextMessageContent,
 )
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, BrowserContext, Page
 from dotenv import load_dotenv
 
 # ─── CONFIG & LOGGING ───────────────────────────────────────────────────────────
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
-    logging.error("🚨 BOT_TOKEN not set in .env")
+    logging.error("❌ BOT_TOKEN is not set in .env")
     exit(1)
 
-# ─── GLOBAL STATE ────────────────────────────────────────────────────────────────
-_playwright = None      # type: async_playwright.Playwright
-_browser: Browser = None
+# URL of your Node.js TON-link service (see README)
+TON_LINK_SERVICE = os.getenv("TON_LINK_SERVICE", "http://localhost:4000/api/ton-link")
+
+# ─── GLOBAL BROWSER STATE (for inline queries) ─────────────────────────────────
+_playwright = None
 _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
     """
-    Launch (once) a headless iPhone 13 context and page.
-    Returns the same Page until shutdown.
+    Launch a headless Chromium once and keep it running,
+    so inline queries can reuse the logged-in session.
     """
-    global _playwright, _browser, _context, _page
+    global _playwright, _context, _page
     if _page:
         return _page
 
-    logging.info("🚀 Launching headless iPhone 13…")
     _playwright = await async_playwright().start()
-
-    # pull the built-in iPhone 13 descriptor
-    iphone = _playwright.devices["iPhone 13"]
-
-    # launch a persistent Chromium (so we keep cookies until /logout)
-    _browser = await _playwright.chromium.launch(
+    _context = await _playwright.chromium.launch_persistent_context(
+        user_data_dir="./playwright_data",
         headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
-    )
-    _context = await _browser.new_context(
-        **iphone,
-        permissions=["clipboard-read"]
+        args=["--no-sandbox","--disable-dev-shm-usage"]
     )
     _page = await _context.new_page()
-    await _page.goto("https://fragment.com", wait_until="domcontentloaded")
-    logging.info("✅ Navigated to fragment.com (mobile view)")
     return _page
 
 async def shutdown_browser():
-    """Closes page, context & browser, wiping session."""
-    global _playwright, _browser, _context, _page
-    if _page:
-        await _page.close()
+    """Closes the browser—used if you ever want to nuke the session."""
+    global _playwright, _context, _page
     if _context:
         await _context.close()
-    if _browser:
-        await _browser.close()
     if _playwright:
         await _playwright.stop()
     _page = None
     _context = None
-    _browser = None
     _playwright = None
-    logging.info("🔒 Browser closed, session cleared.")
 
-# ─── /connect ─────────────────────────────────────────────────────────────────────
+# ─── /connect ───────────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
-    page = await init_browser()
-    await msg.answer("🔗 Opening Fragment and popping up TON-Connect…")
-
-    try:
-        # 1) Click the VISIBLE "Connect TON" button
-        await page.click("button:has-text('Connect TON'):visible", timeout=10000)
-
-        # 2) Wait for the modal root
-        await page.wait_for_selector("#tc-widget-root", state="visible", timeout=10000)
-
-        # 3) Click the "Copy Link" button in the QR modal
-        await page.click("#tc-widget-root button:has-text('Copy Link')", timeout=5000)
-
-        # 4) Wait for the "Link Copied" confirmation
-        await page.wait_for_selector("text=Link Copied", timeout=5000)
-
-        # 5) Read the link from clipboard
-        link = await page.evaluate("() => navigator.clipboard.readText()")
-        if not link:
-            raise RuntimeError("Clipboard was empty")
-
-        # 6) Send the deep-link with a Logout button
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
-            ]
-        )
-        await msg.answer(
-            f"🔗 TON-Connect link:\n\n`{link}`",
-            parse_mode="Markdown",
-            reply_markup=kb
-        )
-
-        # 7) Wait up to 60s for the modal to close (handshake)
+    """
+    1) Hit TON_LINK_SERVICE to get a fresh deep-link
+    2) Send it with a “Log out” button
+    """
+    await msg.answer("🔗 Generating your TON-Connect link…")
+    async with aiohttp.ClientSession() as session:
         try:
-            await page.wait_for_selector("#tc-widget-root", state="detached", timeout=60000)
-            await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
-        except asyncio.TimeoutError:
-            logging.warning("⌛ Handshake timeout – maybe already connected.")
-    except Exception as e:
-        logging.exception(e)
-        await msg.answer(f"⚠️ Error during /connect:\n```\n{e}\n```")
+            resp = await session.post(TON_LINK_SERVICE, json={
+                "allowedWallets": ["tonkeeper","tonhub","mytonwallet","telegram"]
+            })
+            resp.raise_for_status()
+            data = await resp.json()
+            link = data.get("connectUrl")
+            if not link:
+                raise ValueError("no connectUrl in response")
 
-# ─── /logout ─────────────────────────────────────────────────────────────────────
-async def do_logout(destination):
-    await shutdown_browser()
-    await destination.answer(
-        "🔒 You’ve been logged out. Use `/connect` to reconnect.",
-        parse_mode="Markdown"
-    )
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [ InlineKeyboardButton("🔒 Log out", callback_data="logout") ]
+            ])
+            await msg.answer(
+                f"✅ Here’s your TON-Connect link:\n\n`{link}`",
+                parse_mode="Markdown",
+                reply_markup=kb
+            )
+        except Exception as e:
+            logging.exception(e)
+            await msg.answer(f"❌ Failed to generate link:\n`{e}`")
 
+# ─── /logout ────────────────────────────────────────────────────────────────────
 async def on_logout_cmd(msg: types.Message):
     await do_logout(msg)
 
 async def on_logout_cb(call: types.CallbackQuery):
-    await call.answer()     # dismiss the spinning loader
+    await call.answer()
     await do_logout(call.message)
 
-# ─── Inline Query (login code) ───────────────────────────────────────────────────
+async def do_logout(dest):
+    # If you had a persistent Playwright session for /connect,
+    # you could shut it down here. We only use playwright for inline,
+    # so we leave it running.
+    await dest.answer("🔒 Logged out. Run `/connect` again to start over.", parse_mode="Markdown")
+
+# ─── inline query: fetch login code for +888<suffix> ─────────────────────────────
+@dp.inline_query()
 async def on_inline_query(inline_q: InlineQuery):
     q = inline_q.query.strip()
     if not (q.isdigit() and 3 <= len(q) <= 7):
@@ -148,17 +120,20 @@ async def on_inline_query(inline_q: InlineQuery):
 
     page = await init_browser()
     try:
+        # navigate to your Numbers page
         await page.goto("https://fragment.com/my/numbers", wait_until="domcontentloaded")
-        # find the row for our suffix and click "Get Login Code"
+        # find the row for this suffix
         row = await page.wait_for_selector(
-            f"xpath=//div[contains(text(), '{suffix}')]/ancestor::div[@role='row']",
+            f"xpath=//div[contains(.,'{suffix}')]/ancestor::div[@role='row']",
             timeout=7000
         )
+        # click “Get Login Code”
         await row.click("button:has-text('Get Login Code')")
+        # scrape the code
         el = await page.wait_for_selector("div.login-code", timeout=10000)
         code = (await el.text_content() or "").strip() or "❌ No code"
     except Exception as e:
-        logging.error(f"Inline query failed: {e}")
+        logging.exception(e)
         code = f"⚠️ {e}"
 
     result = InlineQueryResultArticle(
@@ -173,12 +148,12 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    dp.message.register(on_connect, Command(commands=["connect"]))
-    dp.message.register(on_logout_cmd, Command(commands=["logout"]))
+    dp.message.register(on_connect, Command("connect"))
+    dp.message.register(on_logout_cmd, Command("logout"))
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
-    logging.info("🤖 Bot started — /connect, /logout; inline → send digits.")
+    logging.info("Bot is up. Commands: /connect, /logout. Inline: type 3–7 digits.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
