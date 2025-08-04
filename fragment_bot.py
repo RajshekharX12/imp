@@ -1,17 +1,12 @@
-# File: fragment_bot.py
+# file: fragment_bot.py
+
 import os
 import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    InlineQuery,
-    InlineQueryResultArticle,
-    InputTextMessageContent,
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from playwright.async_api import async_playwright, BrowserContext, Page
 from dotenv import load_dotenv
 
@@ -24,37 +19,27 @@ if not BOT_TOKEN:
     exit(1)
 
 # ─── GLOBAL BROWSER STATE ────────────────────────────────────────────────────────
-_playwright = None          # type: ignore
-_context: BrowserContext = None  # type: ignore
-_page: Page = None          # type: ignore
+_playwright = None
+_context: BrowserContext = None
+_page: Page = None
 
 async def init_browser() -> Page:
     global _playwright, _context, _page
     if _page:
         return _page
 
-    logging.info("🚀 Launching Playwright in headless iPhone 13 mode…")
+    logging.info("🚀 Launching Playwright in headless mode…")
     _playwright = await async_playwright().start()
-
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=user_data,
         headless=True,
         args=["--no-sandbox", "--disable-dev-shm-usage"],
-        viewport={"width": 390, "height": 844},
-        user_agent=(
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1"
-        ),
-        device_scale_factor=3,
-        is_mobile=True,
-        has_touch=True,
-        permissions=["clipboard-read"],
+        permissions=["clipboard-read"]
     )
-
     _page = await _context.new_page()
     await _page.goto("https://fragment.com", wait_until="domcontentloaded")
-    logging.info("✅ Navigated to fragment.com (mobile view)")
+    logging.info("✅ Navigated to fragment.com")
     return _page
 
 async def shutdown_browser():
@@ -71,48 +56,52 @@ async def shutdown_browser():
 # ─── /connect ─────────────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
     page = await init_browser()
+    await msg.answer("🔗 Opening Fragment and popping up TON-Connect…")
+
     try:
-        # 1) Tap 'Connect TON'
-        await page.click("button:has-text('Connect TON'):visible")
+        # 1) Click the *visible* Connect TON button
+        btn = page.locator("button.ton-auth-link:visible").first
+        await btn.click()
 
-        # 2) Wait for the TON-wallet dialog
-        await page.wait_for_selector("text=Connect your TON wallet", timeout=10000)
+        # 2) Wait for the QR modal container
+        await page.wait_for_selector("#tc-widget-root", state="visible", timeout=10000)
 
-        # 3) Open the QR modal (second button)
-        dialog = page.locator("div:has-text('Connect your TON wallet')").first
-        await dialog.locator("button").nth(1).click()
+        # 3) Try to grab the link from “Open Link” <a> or “Copy Link” <button>
+        link = None
+        # a) check for an anchor
+        open_a = page.locator("#tc-widget-root a:has-text('Open Link')").first
+        if await open_a.count():
+            link = await open_a.get_attribute("href")
+        # b) fallback to the copy‐button
+        if not link:
+            copy_btn = page.locator("#tc-widget-root button:has-text('Copy Link')").first
+            if await copy_btn.count():
+                link = await copy_btn.get_attribute("data-clipboard-text")
 
-        # 4) Wait for & grab the Copy Link button
-        copy_btn = dialog.locator("button:has-text('Copy Link')")
-        await copy_btn.wait_for(timeout=10000)
-        link = await copy_btn.get_attribute("data-clipboard-text") or ""
         if not link:
             return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
 
-        # 5) Send link + logout button
+        # 4) Send it with a logout button
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
         ])
         await msg.answer(
-            f"🔗 Copy this link into your TON wallet app to connect:\n\n`{link}`",
+            f"🔗 Copy this link into your TON-wallet to connect:\n\n`{link}`",
             parse_mode="Markdown",
             reply_markup=kb
         )
 
-        # 6) Wait for the Connect button to disappear (handshake)
+        # 5) Wait up to 60s for the handshake (button disappears)
         try:
-            await page.wait_for_selector("button:has-text('Connect TON')",
-                                         state="detached",
-                                         timeout=60000)
+            await page.wait_for_selector("button.ton-auth-link:visible", state="detached", timeout=60000)
             await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
         except asyncio.TimeoutError:
-            logging.warning("Handshake timeout; maybe already connected.")
-
+            logging.warning("Handshake timeout; maybe you’ve already connected.")
     except Exception as e:
         logging.exception(e)
         await msg.answer(f"⚠️ Error during /connect:\n```\n{e}\n```")
 
-# ─── /logout & inline-query remain unchanged ─────────────────────────────────────
+# ─── /logout ─────────────────────────────────────────────────────────────────────
 async def on_logout_cmd(msg: types.Message):
     await do_logout(msg)
 
@@ -127,35 +116,7 @@ async def do_logout(destination):
         parse_mode="Markdown"
     )
 
-async def on_inline_query(inline_q: InlineQuery):
-    q = inline_q.query.strip()
-    if not (q.isdigit() and 3 <= len(q) <= 7):
-        return await inline_q.answer(results=[], cache_time=1)
-
-    suffix = q
-    full = f"+888{suffix}"
-    code = "❌ Error"
-
-    page = await init_browser()
-    try:
-        await page.goto("https://fragment.com/my/numbers", wait_until="domcontentloaded")
-        row = await page.wait_for_selector(
-            f"xpath=//div[contains(text(), '{suffix}')]/ancestor::div[@role='row']",
-            timeout=7000
-        )
-        await row.click("button:has-text('Get Login Code')")
-        el = await page.wait_for_selector("div.login-code", timeout=10000)
-        code = (await el.text_content() or "").strip() or "❌ No code"
-    except Exception as e:
-        code = f"⚠️ {e}"
-
-    result = InlineQueryResultArticle(
-        id=suffix,
-        title=f"{full} → {code}",
-        input_message_content=InputTextMessageContent(f"Login code for {full}: {code}")
-    )
-    await inline_q.answer(results=[result], cache_time=5)
-
+# ─── Bot Setup & Run ─────────────────────────────────────────────────────────────
 async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
@@ -163,9 +124,8 @@ async def main():
     dp.message.register(on_connect, Command(commands=["connect"]))
     dp.message.register(on_logout_cmd, Command(commands=["logout"]))
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
-    dp.inline_query.register(on_inline_query)
 
-    logging.info("🤖 Bot started — /connect, /logout; inline → digits.")
+    logging.info("🤖 Bot started; commands: /connect, /logout")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
