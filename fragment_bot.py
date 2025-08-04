@@ -13,7 +13,7 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InputTextMessageContent,
 )
-from playwright.async_api import async_playwright, BrowserContext, Page
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from dotenv import load_dotenv
 
 # ─── CONFIG & LOGGING ───────────────────────────────────────────────────────────
@@ -25,88 +25,99 @@ if not BOT_TOKEN:
     exit(1)
 
 # ─── GLOBAL BROWSER STATE ────────────────────────────────────────────────────────
-_playwright = None             # the async_playwright() handle
+_playwright = None      # async_playwright() instance
+_browser: Browser = None
 _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
-    """Launch (once) a persistent headless Chromium context emulating iPhone 13."""
-    global _playwright, _context, _page
+    """
+    Launch a headless Chromium + iPhone13 emulation & return the Page.
+    Reuses the same page until shutdown_browser() is called.
+    """
+    global _playwright, _browser, _context, _page
     if _page:
         return _page
 
-    logging.info("🚀 Launching headless mobile (iPhone 13)…")
+    logging.info("🚀 Starting Playwright…")
     _playwright = await async_playwright().start()
+
+    # Launch browser headless
+    _browser = await _playwright.chromium.launch(
+        headless=True,
+        args=["--no-sandbox", "--disable-dev-shm-usage"]
+    )
+
+    # Grab the Python-style device descriptor
     device = _playwright.devices["iPhone 13"]
 
-    user_data_dir = os.path.join(os.getcwd(), "playwright_user_data")
-    _context = await _playwright.chromium.launch_persistent_context(
-        user_data_dir=user_data_dir,
-        headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
-        # explicit mobile emulation parameters:
-        viewport=device["viewport"],
-        user_agent=device["userAgent"],
-        device_scale_factor=device["deviceScaleFactor"],
-        is_mobile=device["isMobile"],
-        has_touch=device["hasTouch"],
-        permissions=["clipboard-read"],
+    # Create a mobile-emulated context
+    _context = await _browser.new_context(
+        **device,
+        permissions=["clipboard-read"],  # allow clipboard access
     )
+
+    # Open a new page, navigate to fragment.com
     _page = await _context.new_page()
     await _page.goto("https://fragment.com", wait_until="domcontentloaded")
-    logging.info("✅ Fragment.com loaded (mobile view)")
+    logging.info("✅ Navigated to fragment.com (iPhone 13 view)")
     return _page
 
 async def shutdown_browser():
-    """Tear down the persistent browser session."""
-    global _playwright, _context, _page
+    """Tear down everything and clear session."""
+    global _playwright, _browser, _context, _page
     if _context:
         await _context.close()
+    if _browser:
+        await _browser.close()
     if _playwright:
         await _playwright.stop()
     _page = None
     _context = None
+    _browser = None
     _playwright = None
-    logging.info("🔒 Browser closed, session cleared.")
+    logging.info("🔒 Browser & context closed, session cleared.")
 
 # ─── /connect ─────────────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
     page = await init_browser()
 
     try:
-        # 1) Tap the visible header button
+        # 1) Tap the header “Connect TON” button
         await page.locator("button.ton-auth-link:visible").click()
 
-        # 2) Wait for the TON-Connect sheet
-        await page.wait_for_selector("#tc-widget-root", state="visible", timeout=10000)
+        # 2) Wait for the TON-Connect sheet to show
+        await page.wait_for_selector("#tc-widget-root", state="visible", timeout=10_000)
         sheet = page.locator("#tc-widget-root")
 
-        # 3) Tap the QR-grid icon (first button)
+        # 3) Tap the QR-grid icon (first button in the sheet)
         await sheet.locator("button").first.click()
 
-        # 4) Wait for and read the Copy Link button
+        # 4) Wait for & extract the deep link from “Copy Link”
         copy_btn = sheet.locator("button:has-text('Copy Link')")
-        await copy_btn.wait_for(timeout=10000)
+        await copy_btn.wait_for(timeout=10_000)
         link = await copy_btn.get_attribute("data-clipboard-text")
         if not link:
-            return await msg.answer("⚠️ Couldn't extract the TON-Connect link—please retry.")
+            return await msg.answer("⚠️ Couldn't read the TON-Connect link – please try again.")
 
-        # 5) Send the deep link + a “Log out” button
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
-        ])
+        # 5) Send it with a Log out button
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
+            ]
+        )
         await msg.answer(
-            f"🔗 Paste this link into your wallet to complete the connection:\n\n`{link}`",
+            f"🔗 Paste this link into your wallet to connect:\n\n`{link}`",
             parse_mode="Markdown",
             reply_markup=kb
         )
 
-        # 6) Wait up to 60s for the header button to disappear (handshake)
+        # 6) Wait up to 60 s for the handshake (button disappears)
         try:
-            await page.wait_for_selector("button.ton-auth-link", state="detached", timeout=60000)
+            await page.wait_for_selector("button.ton-auth-link", state="detached", timeout=60_000)
             await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
         except asyncio.TimeoutError:
-            logging.warning("⏱ Handshake timeout—perhaps already connected.")
+            logging.warning("⏱ Handshake timeout – perhaps already connected.")
     except Exception as e:
         logging.exception("❌ /connect failed")
         await msg.answer(f"⚠️ Error during /connect:\n```\n{e}\n```")
@@ -132,21 +143,22 @@ async def on_inline_query(inline_q: InlineQuery):
     if not (q.isdigit() and 3 <= len(q) <= 7):
         return await inline_q.answer(results=[], cache_time=1)
 
-    suffix, full, code = q, f"+888{q}", "❌ Error"
+    suffix = q
+    full = f"+888{suffix}"
+    code = "❌ Error"
     page = await init_browser()
 
     try:
-        # navigate & click “Get Login Code” in the numbers table
         await page.goto("https://fragment.com/my/numbers", wait_until="domcontentloaded")
         row = await page.wait_for_selector(
             f"xpath=//div[contains(text(),'{suffix}')]/ancestor::div[@role='row']",
-            timeout=7000
+            timeout=7_000
         )
         await row.click("button:has-text('Get Login Code')")
-        el = await page.wait_for_selector("div.login-code", timeout=10000)
+        el = await page.wait_for_selector("div.login-code", timeout=10_000)
         code = (await el.text_content() or "").strip() or "❌ No code"
     except Exception as e:
-        logging.exception("⚠️ Inline fetch failed")
+        logging.exception("⚠️ Inline query failed")
         code = f"⚠️ {e}"
 
     result = InlineQueryResultArticle(
@@ -166,7 +178,7 @@ async def main():
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
-    logging.info("🤖 Bot is up: commands: /connect, /logout; inline → digits for codes.")
+    logging.info("🤖 Bot started: /connect, /logout; inline → digits for codes.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
