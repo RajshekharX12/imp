@@ -1,5 +1,3 @@
-# file: fragment_bot.py
-
 import os
 import asyncio
 import logging
@@ -13,80 +11,92 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InputTextMessageContent,
 )
-from playwright.async_api import async_playwright, BrowserContext, Page
 from dotenv import load_dotenv
+
+# Selenium imports
+import chromedriver_autoinstaller
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # ─── CONFIG & LOGGING ───────────────────────────────────────────────────────────
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     logging.error("BOT_TOKEN is not set in .env")
     exit(1)
 
-# ─── GLOBAL BROWSER STATE ────────────────────────────────────────────────────────
-_playwright = None      # playwright instance
-_context: BrowserContext = None
-_page: Page = None
+# ─── GLOBAL DRIVER STATE ─────────────────────────────────────────────────────────
+_driver: webdriver.Chrome | None = None
+_wait: WebDriverWait | None = None
 
-async def init_browser() -> Page:
-    """Launch or return a persistent headless Chromium context."""
-    global _playwright, _context, _page
-    if _page:
-        return _page
+def init_driver():
+    global _driver, _wait
+    if _driver:
+        return _driver, _wait
 
-    logging.info("🚀 Launching Playwright…")
-    _playwright = await async_playwright().start()
-    user_data = os.path.join(os.getcwd(), "playwright_user_data")
-    _context = await _playwright.chromium.launch_persistent_context(
-        user_data_dir=user_data,
-        headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
-        permissions=["clipboard-read"]
-    )
-    _page = await _context.new_page()
-    await _page.goto("https://fragment.com", wait_until="domcontentloaded")
-    logging.info("✅ Navigated to fragment.com")
-    return _page
+    # ensure chromedriver is installed
+    chromedriver_autoinstaller.install()
 
-async def shutdown_browser():
-    """Close browser context & Playwright to clear session."""
-    global _playwright, _context, _page
-    if _context:
-        await _context.close()
-    if _playwright:
-        await _playwright.stop()
-    _page = None
-    _context = None
-    _playwright = None
+    chrome_opts = Options()
+    chrome_opts.add_argument("--headless=new")
+    chrome_opts.add_argument("--no-sandbox")
+    chrome_opts.add_argument("--disable-dev-shm-usage")
+    chrome_opts.add_experimental_option("prefs", {
+        "profile.default_content_setting_values.clipboard": 1
+    })
+
+    service = ChromeService()
+    _driver = webdriver.Chrome(service=service, options=chrome_opts)
+    _driver.set_window_size(1200, 800)
+    _wait = WebDriverWait(_driver, 20)
+    return _driver, _wait
+
+def shutdown_driver():
+    global _driver, _wait
+    if _driver:
+        _driver.quit()
+    _driver = None
+    _wait = None
     logging.info("🔒 Browser closed, session cleared.")
 
 # ─── /connect ─────────────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
-    page = await init_browser()
+    driver, wait = init_driver()
     try:
-        # 1) Click “Connect TON”
-        await page.click("button.ton-auth-link:visible")
-        # 2) Wait for the modal
-        await page.wait_for_selector("#tc-widget-root", state="visible", timeout=10000)
-        # 3) Click “Copy Link”
-        copy_btn = page.locator("#tc-widget-root button:has-text('Copy Link')")
-        await copy_btn.click()
-        # 4) Read the link from clipboard
-        link = await page.evaluate("() => navigator.clipboard.readText()")
-        if not link:
-            raise RuntimeError("No link in clipboard")
+        driver.get("https://fragment.com")
 
-        # 5) Send link + logout
+        # 1) Click “Connect TON”
+        btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.ton-auth-link")))
+        btn.click()
+
+        # 2) Wait for TON-Connect modal
+        wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "#tc-widget-root")))
+
+        # 3) Click the “Copy Link” button inside it
+        copy_btn = wait.until(EC.element_to_be_clickable((
+            By.CSS_SELECTOR,
+            "#tc-widget-root button[data-clipboard-text]"
+        )))
+        link = copy_btn.get_attribute("data-clipboard-text")
+        if not link:
+            raise RuntimeError("Couldn’t extract the TON-Connect link")
+
+        # 4) Send link + “Log out”
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔒 Log out", callback_data="logout")]])
         await msg.answer(f"🔗 TON-Connect link:\n`{link}`", parse_mode="Markdown", reply_markup=kb)
 
-        # 6) Wait for the “Connect TON” button to disappear (handshake)
+        # 5) Wait up to 60s for handshake (button disappears)
         try:
-            await page.wait_for_selector("button.ton-auth-link", state="detached", timeout=60000)
+            wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, "button.ton-auth-link")), timeout=60)
             await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
-        except asyncio.TimeoutError:
-            logging.warning("Handshake timeout; maybe already connected.")
+        except:
+            logging.warning("Handshake timeout or already connected.")
 
     except Exception as e:
         logging.exception(e)
@@ -101,7 +111,7 @@ async def on_logout_cb(call: types.CallbackQuery):
     await do_logout(call.message)
 
 async def do_logout(destination):
-    await shutdown_browser()
+    shutdown_driver()
     await destination.answer("🔒 You’ve been logged out. Use `/connect` to reconnect.", parse_mode="Markdown")
 
 # ─── Inline Query ────────────────────────────────────────────────────────────────
@@ -114,16 +124,16 @@ async def on_inline_query(inline_q: InlineQuery):
     full = f"+888{suffix}"
     code = "❌ Error"
 
-    page = await init_browser()
+    driver, wait = init_driver()
     try:
-        await page.goto("https://fragment.com/my/numbers", wait_until="domcontentloaded")
-        row = await page.wait_for_selector(
-            f"xpath=//div[contains(text(), '{suffix}')]/ancestor::div[@role='row']",
-            timeout=7000
-        )
-        await row.click("button:has-text('Get Login Code')")
-        el = await page.wait_for_selector("div.login-code", timeout=10000)
-        code = (await el.text_content() or "").strip() or "❌ No code"
+        driver.get("https://fragment.com/my/numbers")
+        row = wait.until(EC.element_to_be_clickable((
+            By.XPATH,
+            f"//div[contains(text(), '{suffix}')]/ancestor::div[@role='row']//button[text()='Get Login Code']"
+        )))
+        row.click()
+        el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div.login-code")))
+        code = el.text.strip() or "❌ No code"
     except Exception as e:
         code = f"⚠️ {e}"
 
@@ -139,7 +149,6 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    # register handlers
     dp.message.register(on_connect, Command(commands=["connect"]))
     dp.message.register(on_logout_cmd, Command(commands=["logout"]))
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
