@@ -1,5 +1,3 @@
-# File: fragment_bot.py
-
 import os
 import asyncio
 import logging
@@ -16,20 +14,21 @@ from aiogram.types import (
 from playwright.async_api import async_playwright, BrowserContext, Page
 from dotenv import load_dotenv
 
-# ─── CONFIG & LOGGING ───────────────────────────────────────────────────────────
+# ─── CONFIG & LOGGING ─────────────────────────────
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+print("Loaded BOT_TOKEN:", repr(BOT_TOKEN))  # <-- For debugging!
+logging.basicConfig(level=logging.INFO)
 if not BOT_TOKEN:
     logging.error("BOT_TOKEN is not set in .env")
     exit(1)
 
-# ─── GLOBAL BROWSER STATE ────────────────────────────────────────────────────────
+# ─── GLOBAL BROWSER STATE ─────────────────────────
 _playwright = None
 _context: BrowserContext = None
 _page: Page = None
 
-# CSS-based selectors
+# CSS selectors
 CONNECT_BTN = ".tm-header-button:has-text('Connect TON')"
 WIDGET_ROOT = "#tc-widget-root"
 DEEP_LINK   = f"{WIDGET_ROOT} a[href^='tc://']"
@@ -60,7 +59,7 @@ async def shutdown_browser():
         await _playwright.stop()
     _page = _context = _playwright = None
 
-# ─── /connect HANDLER ────────────────────────────────────────────────────────────
+# ─── /connect HANDLER ─────────────────────────────
 async def on_connect(msg: types.Message):
     page = await init_browser()
 
@@ -78,7 +77,7 @@ async def on_connect(msg: types.Message):
 
     # 4) Send to user with a “Log out” button
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
+        [InlineKeyboardButton(text="🔒 Log out", callback_data="logout")]
     ])
     await msg.answer(
         f"🔗 Copy this link into Tonkeeper to connect:\n\n`{link}`",
@@ -93,7 +92,7 @@ async def on_connect(msg: types.Message):
     except asyncio.TimeoutError:
         logging.warning("Connect TON button never detached—handshake may already be done.")
 
-# ─── /logout HANDLER ─────────────────────────────────────────────────────────────
+# ─── /logout HANDLER ──────────────────────────────
 async def on_logout_cmd(msg: types.Message):
     await do_logout(msg)
 
@@ -105,7 +104,7 @@ async def do_logout(destination):
     await shutdown_browser()
     await destination.answer("🔒 Logged out. Use `/connect` to reconnect.", parse_mode="Markdown")
 
-# ─── INLINE QUERY HANDLER ────────────────────────────────────────────────────────
+# ─── INLINE QUERY HANDLER ─────────────────────────
 async def on_inline_query(inline_q: InlineQuery):
     q = inline_q.query.strip()
     if not (q.isdigit() and 3 <= len(q) <= 7):
@@ -135,7 +134,7 @@ async def on_inline_query(inline_q: InlineQuery):
     )
     await inline_q.answer(results=[result], cache_time=5)
 
-# ─── BOT SETUP & START ───────────────────────────────────────────────────────────
+# ─── BOT SETUP & START ───────────────────────────
 async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
