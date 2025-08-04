@@ -1,13 +1,16 @@
 import asyncio
 import logging
 import os
+from dotenv import load_dotenv  # ← new
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 from aiogram.filters import Command
 from playwright.async_api import async_playwright
 
-# Read the token from the BOT_TOKEN env var
+# ─── Load .env ──────────────────────────────────────────────────────────────────────────
+load_dotenv()  # ← this will read BOT_TOKEN from your .env file
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("⚠️  You must set the BOT_TOKEN environment variable!")
