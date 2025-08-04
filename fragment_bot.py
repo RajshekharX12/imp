@@ -31,7 +31,7 @@ _page: Page = None
 
 async def init_browser() -> Page:
     """
-    Launch (or reuse) a persistent headless Chromium context.
+    Launch or reuse a persistent headless Chromium context.
     """
     global _playwright, _context, _page
     if _page:
@@ -65,28 +65,28 @@ async def on_connect(msg: types.Message):
     """
     /connect →
       1) Click “Connect TON”
-      2) Wait for the TON-Connect modal (#tc-widget-root)
-      3) Click the QR‐icon toggle (first <button> in that modal)
-      4) Wait for “Copy Link” button to appear
+      2) Wait for the TON-Connect widget to attach (#tc-widget-root, may be hidden)
+      3) Force-click its first <button> (the QR-icon toggle)
+      4) Wait for the “Copy Link” button to attach
       5) Grab its data-clipboard-text (the tc://… URL)
       6) Send link + “Log out” inline button
-      7) Wait for handshake completion → “Connected successfully!”
+      7) Wait for handshake → “Connected successfully!”
     """
     page = await init_browser()
 
-    # 1) Open the TON-Connect modal
+    # 1) Click “Connect TON”
     await page.click("button:has-text('Connect TON')")
 
-    # 2) Wait for the modal container
-    modal = page.locator("#tc-widget-root")
-    await modal.wait_for(timeout=10000)
+    # 2) Wait for the TON-Connect widget to be attached (hidden or visible)
+    widget = page.locator("#tc-widget-root")
+    await widget.wait_for(state="attached", timeout=10000)
 
-    # 3) Click the first button inside that modal (the QR-icon)
-    await modal.locator("button").first.click()
+    # 3) Force-click its first button (the QR-icon toggle)
+    await widget.locator("button").first.click(force=True)
 
-    # 4) Wait for the Copy Link button
-    copy_btn = modal.locator("button:has-text('Copy Link')")
-    await copy_btn.wait_for(timeout=10000)
+    # 4) Wait for the Copy Link button to be attached
+    copy_btn = widget.locator("button:has-text('Copy Link')")
+    await copy_btn.wait_for(state="attached", timeout=10000)
 
     # 5) Grab the deep-link URL
     link = await copy_btn.get_attribute("data-clipboard-text")
@@ -103,7 +103,7 @@ async def on_connect(msg: types.Message):
         reply_markup=kb
     )
 
-    # 7) Wait up to 60s for the “Connect TON” button to vanish → handshake done
+    # 7) Wait up to 60s for the “Connect TON” button to detach → handshake done
     try:
         await page.wait_for_selector(
             "button:has-text('Connect TON')",
@@ -123,7 +123,7 @@ async def on_logout_cb(call: types.CallbackQuery):
     await do_logout(call.message)
 
 async def do_logout(destination):
-    """Clear browser session and notify."""
+    """Clear browser session and notify user."""
     await shutdown_browser()
     await destination.answer(
         "🔒 You’ve been logged out. Use `/connect` to reconnect.",
@@ -173,9 +173,8 @@ async def main():
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
-    logging.info("🤖 Bot is live: /connect, /logout; inline → type digits.")
+    logging.info("🤖 Bot running: /connect, /logout; inline → type digits.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
