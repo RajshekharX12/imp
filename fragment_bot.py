@@ -63,16 +63,14 @@ async def on_connect(msg: types.Message):
         btn = page.locator("button.ton-auth-link:visible").first
         await btn.click()
 
-        # 2) Wait for the QR modal container
-        await page.wait_for_selector("#tc-widget-root", state="visible", timeout=10000)
+        # 2) **Wait for the QR image** to become visible (instead of the wrapper div)
+        await page.wait_for_selector("#tc-widget-root img", state="visible", timeout=10000)
 
-        # 3) Try to grab the link from “Open Link” <a> or “Copy Link” <button>
+        # 3) Extract the deep-link
         link = None
-        # a) check for an anchor
         open_a = page.locator("#tc-widget-root a:has-text('Open Link')").first
         if await open_a.count():
             link = await open_a.get_attribute("href")
-        # b) fallback to the copy‐button
         if not link:
             copy_btn = page.locator("#tc-widget-root button:has-text('Copy Link')").first
             if await copy_btn.count():
@@ -81,22 +79,22 @@ async def on_connect(msg: types.Message):
         if not link:
             return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
 
-        # 4) Send it with a logout button
+        # 4) Send link + logout button
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
         ])
         await msg.answer(
-            f"🔗 Copy this link into your TON-wallet to connect:\n\n`{link}`",
+            f"🔗 Copy this link into your TON wallet to connect:\n\n`{link}`",
             parse_mode="Markdown",
             reply_markup=kb
         )
 
-        # 5) Wait up to 60s for the handshake (button disappears)
+        # 5) Wait for handshake (button disappears)
         try:
             await page.wait_for_selector("button.ton-auth-link:visible", state="detached", timeout=60000)
             await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
         except asyncio.TimeoutError:
-            logging.warning("Handshake timeout; maybe you’ve already connected.")
+            logging.warning("Handshake timeout; you may already be connected.")
     except Exception as e:
         logging.exception(e)
         await msg.answer(f"⚠️ Error during /connect:\n```\n{e}\n```")
