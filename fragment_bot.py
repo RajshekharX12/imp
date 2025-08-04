@@ -1,6 +1,7 @@
 # File: fragment_bot.py
 
 import os
+import re
 import asyncio
 import logging
 
@@ -30,12 +31,12 @@ _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
-    """Launch or reuse a persistent headless Playwright Chromium context."""
+    """Launch or reuse a persistent headless Chromium context."""
     global _playwright, _context, _page
     if _page:
         return _page
 
-    logging.info("🚀 Launching Playwright in headless mode…")
+    logging.info("🚀 Launching headless Chromium…")
     _playwright = await async_playwright().start()
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
@@ -49,7 +50,7 @@ async def init_browser() -> Page:
     return _page
 
 async def shutdown_browser():
-    """Close context & Playwright to clear session."""
+    """Close Playwright context to clear the TON session."""
     global _playwright, _context, _page
     if _context:
         await _context.close()
@@ -58,29 +59,34 @@ async def shutdown_browser():
     _page = None
     _context = None
     _playwright = None
-    logging.info("🔒 Browser closed, session cleared.")
+    logging.info("🔒 Session cleared")
 
 # ─── /connect HANDLER ────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
     """
     /connect →
       1) Click “Connect TON”
-      2) Grab the first element with data-clipboard-text (the Copy Link widget)
-      3) Send that tc://… URL + Logout button
-      4) Wait for handshake → “Connected successfully!”
+      2) Sleep briefly for the modal HTML to render
+      3) Pull page.content() and regex-extract the tc://… URL
+      4) Send link + Logout button
+      5) Wait for handshake → “Connected successfully!”
     """
     page = await init_browser()
 
-    # 1) Click “Connect TON”
+    # 1) Open the TON-Connect modal
     await page.click("button:has-text('Connect TON')")
 
-    # 2) Wait for the Copy Link widget (it has data-clipboard-text)
-    copy_el = await page.wait_for_selector("[data-clipboard-text]", timeout=10000)
-    link = await copy_el.get_attribute("data-clipboard-text")
-    if not link:
-        return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
+    # 2) Give the modal a moment to inject its HTML
+    await asyncio.sleep(1)
 
-    # 3) Reply with the link + inline “Log out” button
+    # 3) Grab the full HTML and regex out the first tc:// deep-link
+    html = await page.content()
+    m = re.search(r'(tc://\?v=[^"\'>\s]+)', html)
+    if not m:
+        return await msg.answer("⚠️ Couldn’t find the TON-Connect link in the page source. Please try again.")
+    link = m.group(1)
+
+    # 4) Send the link with an inline “Log out” button
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
     ])
@@ -90,7 +96,7 @@ async def on_connect(msg: types.Message):
         reply_markup=kb
     )
 
-    # 4) Wait up to 60s for the “Connect TON” button to vanish → handshake done
+    # 5) Wait up to 60 s for the “Connect TON” button to disappear (handshake complete)
     try:
         await page.wait_for_selector(
             "button:has-text('Connect TON')",
@@ -127,7 +133,7 @@ async def on_inline_query(inline_q: InlineQuery):
         return await inline_q.answer(results=[], cache_time=1)
 
     suffix = q
-    full_number = f"+888{suffix}"
+    full = f"+888{suffix}"
     code = "❌ Error"
 
     page = await init_browser()
@@ -145,12 +151,12 @@ async def on_inline_query(inline_q: InlineQuery):
 
     result = InlineQueryResultArticle(
         id=suffix,
-        title=f"{full_number} → {code}",
-        input_message_content=InputTextMessageContent(f"Login code for {full_number}: {code}")
+        title=f"{full} → {code}",
+        input_message_content=InputTextMessageContent(f"Login code for {full}: {code}")
     )
     await inline_q.answer(results=[result], cache_time=5)
 
-# ─── BOT SETUP & RUN ─────────────────────────────────────────────────────────────
+# ─── BOT SETUP & START ──────────────────────────────────────────────────────────
 async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
@@ -160,9 +166,10 @@ async def main():
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
-    logging.info("🤖 Bot started. Use /connect, /logout; inline → type digits.")
+    logging.info("🤖 Bot is live: /connect, /logout; inline → type digits.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
