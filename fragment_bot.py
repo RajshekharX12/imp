@@ -29,25 +29,26 @@ _playwright = None
 _context: BrowserContext = None
 _page: Page = None
 
+# CSS-based selectors
+CONNECT_BTN = ".tm-header-button:has-text('Connect TON')"
+WIDGET_ROOT = "#tc-widget-root"
+DEEP_LINK   = f"{WIDGET_ROOT} a[href^='tc://']"
+
 async def init_browser() -> Page:
-    """
-    Launch or return a persistent headless Chromium context.
-    """
+    """Launch or return a persistent headless Chromium context."""
     global _playwright, _context, _page
     if _page:
         return _page
 
-    logging.info("🚀 Launching headless Chromium…")
     _playwright = await async_playwright().start()
-    user_data = os.path.join(os.getcwd(), "playwright_user_data")
+    data_dir = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
-        user_data_dir=user_data,
+        user_data_dir=data_dir,
         headless=True,
         args=["--no-sandbox", "--disable-dev-shm-usage"]
     )
     _page = await _context.new_page()
     await _page.goto("https://fragment.com", wait_until="domcontentloaded")
-    logging.info("✅ At fragment.com")
     return _page
 
 async def shutdown_browser():
@@ -58,33 +59,24 @@ async def shutdown_browser():
     if _playwright:
         await _playwright.stop()
     _page = _context = _playwright = None
-    logging.info("🔒 Session cleared")
 
 # ─── /connect HANDLER ────────────────────────────────────────────────────────────
 async def on_connect(msg: types.Message):
-    """
-    /connect →
-      1) Click “Connect TON”
-      2) Wait for #tc-widget-root to appear
-      3) Grab first <a href="tc://…"> inside it
-      4) Send that link + “Log out” button
-      5) Wait for handshake → “Connected successfully!”
-    """
     page = await init_browser()
 
-    # 1) Open the TON-Connect modal
-    await page.click("button:has-text('Connect TON')")
+    # 1) Click the desktop-header button
+    await page.click(CONNECT_BTN)
 
-    # 2) Wait for the widget container to attach
-    await page.wait_for_selector("#tc-widget-root", timeout=10000)
+    # 2) Wait until the TON-Connect widget is attached
+    await page.wait_for_selector(WIDGET_ROOT, state="attached", timeout=10_000)
 
-    # 3) Grab the deep-link anchor inside it
-    link_el = await page.wait_for_selector("#tc-widget-root a[href^='tc://']", timeout=5000)
+    # 3) Grab the first deep-link
+    link_el = await page.wait_for_selector(DEEP_LINK, timeout=5_000)
     link = await link_el.get_attribute("href")
     if not link:
-        return await msg.answer("⚠️ Couldn't find the TON-Connect link. Please try again.")
+        return await msg.answer("⚠️ Couldn't find the TON-Connect link. Try again.")
 
-    # 4) Send the link with a “Log out” inline button
+    # 4) Send to user with a “Log out” button
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
     ])
@@ -94,16 +86,12 @@ async def on_connect(msg: types.Message):
         reply_markup=kb
     )
 
-    # 5) Wait up to 60s for the “Connect TON” button to detach → handshake done
+    # 5) Wait for handshake (button disappears)
     try:
-        await page.wait_for_selector(
-            "button:has-text('Connect TON')",
-            state="detached",
-            timeout=60000
-        )
-        await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
+        await page.wait_for_selector(CONNECT_BTN, state="detached", timeout=60_000)
+        await msg.answer("✅ Connected successfully!")
     except asyncio.TimeoutError:
-        logging.warning("Handshake timeout; you may already be connected.")
+        logging.warning("Connect TON button never detached—handshake may already be done.")
 
 # ─── /logout HANDLER ─────────────────────────────────────────────────────────────
 async def on_logout_cmd(msg: types.Message):
@@ -114,18 +102,11 @@ async def on_logout_cb(call: types.CallbackQuery):
     await do_logout(call.message)
 
 async def do_logout(destination):
-    """Clear browser session and notify user."""
     await shutdown_browser()
-    await destination.answer(
-        "🔒 You’ve been logged out. Use `/connect` to reconnect.",
-        parse_mode="Markdown"
-    )
+    await destination.answer("🔒 Logged out. Use `/connect` to reconnect.", parse_mode="Markdown")
 
 # ─── INLINE QUERY HANDLER ────────────────────────────────────────────────────────
 async def on_inline_query(inline_q: InlineQuery):
-    """
-    Inline '<suffix>' → fetch login code for +888<suffix>.
-    """
     q = inline_q.query.strip()
     if not (q.isdigit() and 3 <= len(q) <= 7):
         return await inline_q.answer(results=[], cache_time=1)
@@ -139,10 +120,10 @@ async def on_inline_query(inline_q: InlineQuery):
         await page.goto("https://fragment.com/my/numbers", wait_until="domcontentloaded")
         row = await page.wait_for_selector(
             f"xpath=//div[contains(text(), '{suffix}')]/ancestor::div[@role='row']",
-            timeout=7000
+            timeout=7_000
         )
         await row.click("button:has-text('Get Login Code')")
-        el = await page.wait_for_selector("div.login-code", timeout=10000)
+        el = await page.wait_for_selector("div.login-code", timeout=10_000)
         code = (await el.text_content() or "").strip() or "❌ No code"
     except Exception as e:
         code = f"⚠️ {e}"
@@ -164,10 +145,7 @@ async def main():
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
-    logging.info("🤖 Bot running: /connect, /logout; inline → type digits.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
