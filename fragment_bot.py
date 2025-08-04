@@ -25,11 +25,15 @@ if not BOT_TOKEN:
     exit(1)
 
 # ─── GLOBAL BROWSER STATE ────────────────────────────────────────────────────────
-_playwright = None
+_playwright = None  # type: async_playwright.Playwright
 _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
+    """
+    Launch or return a persistent headless Chromium context emulating iPhone 13.
+    Strips out unsupported keys from the Playwright device descriptor.
+    """
     global _playwright, _context, _page
     if _page:
         return _page
@@ -37,15 +41,29 @@ async def init_browser() -> Page:
     logging.info("🚀 Launching Playwright in headless mobile (iPhone 13) mode…")
     _playwright = await async_playwright().start()
 
-    # use iPhone 13 emulation
-    iphone = _playwright.devices.get("iPhone 13", {})
+    # Get the raw iPhone 13 descriptor
+    raw = _playwright.devices["iPhone 13"]
+    # Map its camelCase fields into snake_case for launch_persistent_context
+    device_args = {}
+    for k, v in raw.items():
+        if k == "userAgent":
+            device_args["user_agent"] = v
+        elif k == "viewport":
+            device_args["viewport"] = v
+        elif k == "deviceScaleFactor":
+            device_args["device_scale_factor"] = v
+        elif k == "isMobile":
+            device_args["is_mobile"] = v
+        elif k == "hasTouch":
+            device_args["has_touch"] = v
+        # skip fields like "defaultBrowserType", "name", etc.
 
     user_data = os.path.join(os.getcwd(), "playwright_user_data")
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=user_data,
         headless=True,
         args=["--no-sandbox", "--disable-dev-shm-usage"],
-        **iphone,
+        **device_args,
         permissions=["clipboard-read"],
     )
     _page = await _context.new_page()
@@ -54,6 +72,7 @@ async def init_browser() -> Page:
     return _page
 
 async def shutdown_browser():
+    """Close browser context & Playwright to clear session."""
     global _playwright, _context, _page
     if _context:
         await _context.close()
@@ -69,50 +88,44 @@ async def on_connect(msg: types.Message):
     page = await init_browser()
 
     try:
-        # 1) Tap the mobile header “Connect TON” button
+        # 1) Click “Connect TON”
         await page.click("button:has-text('Connect TON')")
-        # 2) Wait for the modal to appear
-        modal = page.locator("div:has-text('Connect your TON wallet')")
-        await modal.wait_for(timeout=10000)
 
-        # 3) **Click the QR-grid icon** (the first button in the modal)
-        qr_button = modal.locator("button").first
-        await qr_button.click()
+        # 2) Wait for the TON-Connect dialog
+        await page.wait_for_selector("text=Connect your TON wallet", timeout=10000)
 
-        # 4) Wait for the QR screen (it shows “Scan with your mobile wallet”)
+        # 3) Open the QR modal by clicking the grid icon (second button)
+        dialog = page.locator("div:has-text('Connect your TON wallet')")
+        await dialog.locator("button").nth(1).click()
+
+        # 4) Wait for “Scan with your mobile wallet”
         await page.wait_for_selector("text=Scan with your mobile wallet", timeout=10000)
 
-        # 5) Extract the deep link from the “Open Link” or “Copy Link” control
-        #    First try an <a> with “Open Link”
-        link = await page.get_attribute("a:has-text('Open Link')", "href")
-        if not link:
-            # fallback: a button with “Copy Link” carrying data-clipboard-text
-            copy_btn = await page.wait_for_selector("button:has-text('Copy Link')", timeout=5000)
-            link = await copy_btn.get_attribute("data-clipboard-text")
+        # 5) Extract the “Open Link” href if present
+        open_link = await page.get_attribute("a:has-text('Open Link')", "href")
+        link = open_link or "❌ No link found"
 
-        if not link:
-            return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
-
-        # 6) Send to user with a “Log out” button
+        # 6) Send the link with a logout button
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
         ])
         await msg.answer(
-            f"🔗 Copy this link into your wallet to connect:\n\n`{link}`",
+            f"🔗 Copy this link into Tonkeeper to connect:\n\n`{link}`",
             parse_mode="Markdown",
             reply_markup=kb
         )
 
-        # 7) Wait up to 60s for the Connect button to disappear (handshake)
+        # 7) Wait for handshake: the Connect TON button disappears
         try:
-            await page.wait_for_selector("button:has-text('Connect TON')", state="detached", timeout=60000)
+            await page.wait_for_selector("button:has-text('Connect TON')",
+                                         state="detached",
+                                         timeout=60000)
             await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
         except asyncio.TimeoutError:
-            logging.warning("Handshake timed out; you may already be connected.")
-
+            logging.warning("Handshake timeout — maybe already connected.")
     except Exception as e:
         logging.error(f"/connect failed: {e}", exc_info=True)
-        await msg.answer(f"⚠️ Error during /connect:\n```\n{e}\n```")
+        await msg.answer(f"⚠️ Error during connect:\n```\n{e}\n```")
 
 # ─── /logout ─────────────────────────────────────────────────────────────────────
 async def on_logout_cmd(msg: types.Message):
@@ -169,7 +182,7 @@ async def main():
     dp.callback_query.register(on_logout_cb, lambda c: c.data == "logout")
     dp.inline_query.register(on_inline_query)
 
-    logging.info("🤖 Bot started: /connect, /logout; inline → enter digits.")
+    logging.info("🤖 Bot started: /connect, /logout; inline → type digits.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
