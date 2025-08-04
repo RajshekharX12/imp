@@ -1,7 +1,6 @@
 # File: fragment_bot.py
 
 import os
-import re
 import asyncio
 import logging
 
@@ -31,7 +30,9 @@ _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
-    """Launch or reuse a persistent headless Chromium context."""
+    """
+    Launch (or reuse) a persistent headless Chromium context.
+    """
     global _playwright, _context, _page
     if _page:
         return _page
@@ -46,7 +47,7 @@ async def init_browser() -> Page:
     )
     _page = await _context.new_page()
     await _page.goto("https://fragment.com", wait_until="domcontentloaded")
-    logging.info("✅ Navigated to fragment.com")
+    logging.info("✅ At fragment.com")
     return _page
 
 async def shutdown_browser():
@@ -56,9 +57,7 @@ async def shutdown_browser():
         await _context.close()
     if _playwright:
         await _playwright.stop()
-    _page = None
-    _context = None
-    _playwright = None
+    _page = _context = _playwright = None
     logging.info("🔒 Session cleared")
 
 # ─── /connect HANDLER ────────────────────────────────────────────────────────────
@@ -66,27 +65,35 @@ async def on_connect(msg: types.Message):
     """
     /connect →
       1) Click “Connect TON”
-      2) Sleep briefly for the modal HTML to render
-      3) Pull page.content() and regex-extract the tc://… URL
-      4) Send link + Logout button
-      5) Wait for handshake → “Connected successfully!”
+      2) Wait for the TON-Connect modal (#tc-widget-root)
+      3) Click the QR‐icon toggle (first <button> in that modal)
+      4) Wait for “Copy Link” button to appear
+      5) Grab its data-clipboard-text (the tc://… URL)
+      6) Send link + “Log out” inline button
+      7) Wait for handshake completion → “Connected successfully!”
     """
     page = await init_browser()
 
     # 1) Open the TON-Connect modal
     await page.click("button:has-text('Connect TON')")
 
-    # 2) Give the modal a moment to inject its HTML
-    await asyncio.sleep(1)
+    # 2) Wait for the modal container
+    modal = page.locator("#tc-widget-root")
+    await modal.wait_for(timeout=10000)
 
-    # 3) Grab the full HTML and regex out the first tc:// deep-link
-    html = await page.content()
-    m = re.search(r'(tc://\?v=[^"\'>\s]+)', html)
-    if not m:
-        return await msg.answer("⚠️ Couldn’t find the TON-Connect link in the page source. Please try again.")
-    link = m.group(1)
+    # 3) Click the first button inside that modal (the QR-icon)
+    await modal.locator("button").first.click()
 
-    # 4) Send the link with an inline “Log out” button
+    # 4) Wait for the Copy Link button
+    copy_btn = modal.locator("button:has-text('Copy Link')")
+    await copy_btn.wait_for(timeout=10000)
+
+    # 5) Grab the deep-link URL
+    link = await copy_btn.get_attribute("data-clipboard-text")
+    if not link:
+        return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
+
+    # 6) Send it with a “Log out” button
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
     ])
@@ -96,7 +103,7 @@ async def on_connect(msg: types.Message):
         reply_markup=kb
     )
 
-    # 5) Wait up to 60 s for the “Connect TON” button to disappear (handshake complete)
+    # 7) Wait up to 60s for the “Connect TON” button to vanish → handshake done
     try:
         await page.wait_for_selector(
             "button:has-text('Connect TON')",
@@ -105,7 +112,7 @@ async def on_connect(msg: types.Message):
         )
         await msg.answer("✅ Connected successfully!", parse_mode="Markdown")
     except asyncio.TimeoutError:
-        logging.warning("Handshake timeout; you may have already connected.")
+        logging.warning("Handshake timeout; you may already be connected.")
 
 # ─── /logout HANDLER ─────────────────────────────────────────────────────────────
 async def on_logout_cmd(msg: types.Message):
@@ -116,7 +123,7 @@ async def on_logout_cb(call: types.CallbackQuery):
     await do_logout(call.message)
 
 async def do_logout(destination):
-    """Clear browser session and notify user."""
+    """Clear browser session and notify."""
     await shutdown_browser()
     await destination.answer(
         "🔒 You’ve been logged out. Use `/connect` to reconnect.",
@@ -156,7 +163,7 @@ async def on_inline_query(inline_q: InlineQuery):
     )
     await inline_q.answer(results=[result], cache_time=5)
 
-# ─── BOT SETUP & START ──────────────────────────────────────────────────────────
+# ─── BOT SETUP & START ───────────────────────────────────────────────────────────
 async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
@@ -171,5 +178,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
