@@ -87,4 +87,3 @@ async def on_connect_ton(call: CallbackQuery):
 if __name__ == "__main__":
     from aiogram import executor
     executor.start_polling(dp, skip_updates=True)
-
