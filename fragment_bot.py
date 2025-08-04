@@ -30,7 +30,9 @@ _context: BrowserContext = None
 _page: Page = None
 
 async def init_browser() -> Page:
-    """Launch or reuse a persistent headless Chromium context."""
+    """
+    Launch or return a persistent headless Chromium context.
+    """
     global _playwright, _context, _page
     if _page:
         return _page
@@ -63,24 +65,26 @@ async def on_connect(msg: types.Message):
     """
     /connect →
       1) Click “Connect TON”
-      2) Wait for the TON-Connect widget’s anchor (href^="tc://")
-      3) Grab its href as the deep-link
+      2) Wait for #tc-widget-root to appear
+      3) Grab first <a href="tc://…"> inside it
       4) Send that link + “Log out” button
       5) Wait for handshake → “Connected successfully!”
     """
     page = await init_browser()
 
-    # 1) Trigger the TON-Connect modal
+    # 1) Open the TON-Connect modal
     await page.click("button:has-text('Connect TON')")
 
-    # 2) Wait for the deep-link anchor within the widget container
-    selector = "#tc-widget-root a[href^='tc://']"
-    link_el = await page.wait_for_selector(selector, timeout=10000)
+    # 2) Wait for the widget container to attach
+    await page.wait_for_selector("#tc-widget-root", timeout=10000)
+
+    # 3) Grab the deep-link anchor inside it
+    link_el = await page.wait_for_selector("#tc-widget-root a[href^='tc://']", timeout=5000)
     link = await link_el.get_attribute("href")
     if not link:
-        return await msg.answer("⚠️ Couldn’t find the TON-Connect link. Please try again.")
+        return await msg.answer("⚠️ Couldn't find the TON-Connect link. Please try again.")
 
-    # 3) Send the deep-link with a “Log out” button
+    # 4) Send the link with a “Log out” inline button
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton("🔒 Log out", callback_data="logout")]
     ])
@@ -90,7 +94,7 @@ async def on_connect(msg: types.Message):
         reply_markup=kb
     )
 
-    # 4) Wait up to 60s for the “Connect TON” button to disappear (handshake done)
+    # 5) Wait up to 60s for the “Connect TON” button to detach → handshake done
     try:
         await page.wait_for_selector(
             "button:has-text('Connect TON')",
@@ -110,7 +114,7 @@ async def on_logout_cb(call: types.CallbackQuery):
     await do_logout(call.message)
 
 async def do_logout(destination):
-    """Clear browser session and notify."""
+    """Clear browser session and notify user."""
     await shutdown_browser()
     await destination.answer(
         "🔒 You’ve been logged out. Use `/connect` to reconnect.",
@@ -165,4 +169,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
