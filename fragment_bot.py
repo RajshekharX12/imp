@@ -1,29 +1,24 @@
 import asyncio
 import logging
+import os
 
 from aiogram import Bot, Dispatcher
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
-from aiogram.filters import Command  # only Command, no Text
-
+from aiogram.types import Message
+from aiogram.filters import Command
 from playwright.async_api import async_playwright
 
-API_TOKEN = "YOUR_BOT_TOKEN_HERE"
+# Read the token from the BOT_TOKEN env var
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("⚠️  You must set the BOT_TOKEN environment variable!")
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-async def do_ton_connect(chat):
-    """
-    Opens fragment.com headlessly, clicks the Connect TON button,
-    copies the TON-Connect link, and sends it back to the user.
-    """
-    await chat.answer("⏳ Opening fragment.com and copying your TON-Connect link…")
+
+async def do_ton_connect(chat_target: Message):
+    await chat_target.answer("🔗 Opening Fragment and popping up TON-Connect…")
     playwright = await async_playwright().start()
     browser = context = page = None
 
@@ -32,27 +27,30 @@ async def do_ton_connect(chat):
         context = await browser.new_context()
         page = await context.new_page()
 
-        # 1) Navigate & click “Connect TON”
+        # 1) Navigate to Fragment
         await page.goto("https://fragment.com", timeout=60000)
+
+        # 2) Click the desktop "Connect TON" button
         await page.wait_for_selector("button[aria-label='Connect TON']", timeout=10000)
         await page.click("button[aria-label='Connect TON']")
 
-        # 2) Wait for the TON-Connect modal
+        # 3) Wait for the QR modal to appear
         await page.wait_for_selector("#tc-widget-root", state="visible", timeout=10000)
 
-        # 3) Click the QR image itself (this triggers “Link Copied”)
+        # 4) Click the QR image itself → triggers “Link Copied”
         await page.click("#tc-widget-root img", timeout=5000)
+
+        # 5) Wait for the little confirmation toast
         await page.wait_for_selector("text=Link Copied", timeout=5000)
 
-        # 4) Read from the clipboard
+        # 6) Grab the link out of the page’s clipboard
         link = await page.evaluate("() => navigator.clipboard.readText()")
 
-        # 5) Send it back
-        await chat.answer(f"✅ Here’s your TON-Connect link:\n{link}")
+        await chat_target.answer(f"✅ TON-Connect link copied:\n{link}")
 
     except Exception as e:
         logging.exception(e)
-        await chat.answer(f"❌ Oops, something went wrong:\n{e}")
+        await chat_target.answer(f"❌ Oops, something went wrong:\n```\n{e}\n```")
 
     finally:
         if page:
@@ -64,24 +62,9 @@ async def do_ton_connect(chat):
         await playwright.stop()
 
 
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [ InlineKeyboardButton("🔗 Connect TON", callback_data="connect_ton") ]
-    ])
-    await message.answer(
-        "Welcome! Tap the button below to copy your TON-Connect link:",
-        reply_markup=kb
-    )
-
-
-# instead of aiogram.filters.Text, just match the callback_data manually
-@dp.callback_query(lambda c: c.data == "connect_ton")
-async def on_connect_ton(call: CallbackQuery):
-    # remove the inline keyboard so they can’t tap it twice
-    await call.message.edit_reply_markup(None)
-    await call.answer()  # ack the tap
-    await do_ton_connect(call.message)
+@dp.message(Command("connect"))
+async def cmd_connect(message: Message):
+    await do_ton_connect(message)
 
 
 if __name__ == "__main__":
