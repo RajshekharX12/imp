@@ -1,4 +1,4 @@
-# file: ton_bot.py
+# file: fragment_bot.py
 
 import os
 import asyncio
